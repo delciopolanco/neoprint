@@ -1,0 +1,20 @@
+#!/bin/bash
+# The payload is only a STAGING copy at /usr/local/share/neoprint. Running its
+# own installer as the logged-in user copies it to ~/Library/Application
+# Support/Neoprint and registers the per-user LaunchAgent (the same code the
+# tray "start with the system" toggle uses), so there is exactly one autostart
+# mechanism. `launchctl asuser` enters that user's GUI session so the agent
+# actually loads now, not only at the next login.
+set -u
+
+BIN="/usr/local/share/neoprint/neoprint"
+console_user=$(/usr/bin/stat -f%Su /dev/console 2>/dev/null)
+
+if [ -z "$console_user" ] || [ "$console_user" = "root" ] || [ "$console_user" = "loginwindow" ]; then
+  # Nobody logged in (e.g. MDM push): the per-user setup happens on first launch.
+  exit 0
+fi
+
+uid=$(/usr/bin/id -u "$console_user")
+/bin/launchctl asuser "$uid" /usr/bin/sudo -u "$console_user" -H "$BIN" --install --autostart
+exit 0

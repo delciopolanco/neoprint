@@ -1,0 +1,47 @@
+[package]
+name = "neoprint"
+version = "0.2.0"
+edition = "2021"
+description = "neogeniux silent-print sidecar — local HTTP bridge to the OS printer spooler"
+license = "MIT"
+
+[[bin]]
+name = "neoprint"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json", "macros"] }
+tower-http = { version = "0.6", features = ["cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+printers = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+anyhow = "1"
+sha2 = "0.10"
+# OS TLS stack (schannel / Security.framework): no bundled C crypto to compile.
+ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
+native-tls = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(windows)'.dependencies]
+# AttachConsole (CLI output from a windowless exe), MessageBoxW (first-run /
+# fatal-error feedback) and the Run registry key (autostart).
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+# Tray icon + the event loop it needs. Headless (Linux) builds just serve.
+tray-icon = { version = "0.19", default-features = false }
+tao = { version = "0.30", default-features = false }

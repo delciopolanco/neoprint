@@ -1,0 +1,188 @@
+# GENERATED FILE: this is the build workflow of the standalone neoprint repo.
+# It lives in the monorepo at apps/neoprint/mirror-ci/build.yml and is copied to
+# .github/workflows/build.yml here by the monorepo's neoprint-sync workflow.
+# Edit it in the monorepo; changes made here are overwritten on the next sync.
+#
+name: neoprint · build Windows installer
+
+# Builds and publishes the WINDOWS installer (neoprint-setup.exe) + its update
+# manifest (version-windows.json). Signing runs here so a free open-source signing
+# service can sign from public CI. The macOS installer is built and signed in the
+# private monorepo; each platform has its own manifest so the two never race.
+#
+# Required secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION,
+# AWS_S3_BUCKET_NAME. Optional: NEOPRINT_WINDOWS_CERT_PFX_BASE64 +
+# NEOPRINT_WINDOWS_CERT_PASSWORD (signtool); unsigned builds make SmartScreen warn.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    name: build (windows)
+    strategy:
+      matrix:
+        include:
+          - name: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            output-path: target/x86_64-pc-windows-msvc/release/neoprint.exe
+    env:
+      WIN_CERT_B64: ${{ secrets.NEOPRINT_WINDOWS_CERT_PFX_BASE64 }}
+      WIN_CERT_PASSWORD: ${{ secrets.NEOPRINT_WINDOWS_CERT_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: cargo test
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: cargo build --release
+        env:
+          # Baked in at compile time (src/update.rs). Empty = update checks
+          # are disabled in this build.
+          NEOPRINT_UPDATE_URL: ${{ secrets.AWS_S3_BUCKET_NAME != '' && format('https://{0}.s3.{1}.amazonaws.com/neoprint/latest/version-windows.json', secrets.AWS_S3_BUCKET_NAME, secrets.AWS_REGION) || '' }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Regression guard for "No se encontró VCRUNTIME140.dll": the exe must
+      # not import the Visual C++ runtime (.cargo/config.toml
+      # links it statically). Import names are plain ASCII in the PE file.
+      - name: Assert no VC++ runtime import (Windows)
+        if: matrix.name == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          $exe = "${{ matrix.output-path }}"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($exe))
+          $bad = @('VCRUNTIME140', 'MSVCP140') | Where-Object { $text -match "(?i)$_" }
+          if ($bad) {
+            Write-Error "neoprint.exe imports $($bad -join ', ') - crt-static is not in effect"
+            exit 1
+          }
+          Write-Host "OK: no VCRUNTIME140/MSVCP140 import ($((Get-Item $exe).Length) bytes)"
+
+      # ─── Windows: sign (optional) + installer ─────────────────────
+      - name: Sign neoprint.exe (Windows, when a cert secret exists)
+        if: matrix.name == 'windows-x86_64' && env.WIN_CERT_B64 != ''
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\neoprint-cert.pfx", [Convert]::FromBase64String($env:WIN_CERT_B64))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          & $signtool.FullName sign /f "$env:RUNNER_TEMP\neoprint-cert.pfx" /p $env:WIN_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "${{ matrix.output-path }}"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # SumatraPDF is pinned by SHA-256 so a tampered download fails the build.
+      - name: Fetch SumatraPDF (bundled PDF printer)
+        if: matrix.name == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          $ver = '3.5.2'
+          $sha = '66ccb395c9184dce6822dfbb9970c877383b3ead6d9417b5106a844aac512989'
+          $zip = "$env:RUNNER_TEMP\sumatra.zip"
+          Invoke-WebRequest "https://www.sumatrapdfreader.org/dl/rel/$ver/SumatraPDF-$ver-64.zip" -OutFile $zip
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $sha) { Write-Error "SumatraPDF hash mismatch: $actual"; exit 1 }
+          $vendor = 'installer/windows/vendor'
+          New-Item -ItemType Directory -Force $vendor | Out-Null
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP\sumatra -Force
+          Copy-Item "$env:RUNNER_TEMP\sumatra\SumatraPDF-$ver-64.exe" "$vendor\SumatraPDF.exe"
+          Set-Content "$vendor\SUMATRA-LICENSE.txt" "SumatraPDF $ver is free software (GPLv3). Source and license: https://github.com/sumatrapdfreader/sumatrapdf"
+
+      - name: Build Windows installer (Inno Setup)
+        if: matrix.name == 'windows-x86_64'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $exe = (Resolve-Path "${{ matrix.output-path }}").Path
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DSourceExe=$exe" installer/windows/neoprint.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($env:WIN_CERT_B64) {
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+            & $signtool.FullName sign /f "$env:RUNNER_TEMP\neoprint-cert.pfx" /p $env:WIN_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 installer/windows/Output/neoprint-setup.exe
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+            Write-Warning "No Windows signing cert: neoprint-setup.exe is unsigned (SmartScreen will warn)."
+          }
+
+      - name: Upload Windows installer artifact
+        if: matrix.name == 'windows-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: neoprint-installer-windows
+          path: installer/windows/Output/neoprint-setup.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-s3:
+    # Uploads the Windows installer + manifest to S3:
+    #   https://<bucket>.s3.<region>.amazonaws.com/neoprint/latest/neoprint-setup.exe
+    #   https://<bucket>.s3.<region>.amazonaws.com/neoprint/latest/version-windows.json
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout (Cargo.toml only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+
+      - name: Download installer
+        uses: actions/download-artifact@v4
+        with:
+          name: neoprint-installer-windows
+          path: dist/installers
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Upload Windows installer to S3
+        run: |
+          aws s3 cp \
+            dist/installers/neoprint-setup.exe \
+            "s3://${{ secrets.AWS_S3_BUCKET_NAME }}/neoprint/latest/neoprint-setup.exe" \
+            --cache-control "public, max-age=300" \
+            --content-type "application/vnd.microsoft.portable-executable" \
+            --metadata "gitsha=${{ github.sha }}"
+
+      # Uploaded LAST so a client never sees a version whose installer is not published.
+      - name: Publish update manifest
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.+)"/\1/')
+          if [ -z "$VERSION" ]; then echo "::error::could not read the neoprint version from Cargo.toml"; exit 1; fi
+          BASE="https://${{ secrets.AWS_S3_BUCKET_NAME }}.s3.${{ secrets.AWS_REGION }}.amazonaws.com/neoprint/latest"
+          SHA=$(sha256sum dist/installers/neoprint-setup.exe | cut -d' ' -f1)
+          cat > version-windows.json <<EOF
+          { "version": "$VERSION", "url": "$BASE/neoprint-setup.exe", "sha256": "$SHA" }
+          EOF
+          python3 -c "import json;json.load(open('version-windows.json'))"
+          aws s3 cp version-windows.json "s3://${{ secrets.AWS_S3_BUCKET_NAME }}/neoprint/latest/version-windows.json" \
+            --cache-control "public, max-age=60" --content-type "application/json"
+
+      - name: Summary
+        run: |
+          echo "### neoprint (Windows) uploaded to S3" >> $GITHUB_STEP_SUMMARY
+          echo "- installer: https://${{ secrets.AWS_S3_BUCKET_NAME }}.s3.${{ secrets.AWS_REGION }}.amazonaws.com/neoprint/latest/neoprint-setup.exe" >> $GITHUB_STEP_SUMMARY
+          echo "- commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
