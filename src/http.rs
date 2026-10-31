@@ -14,7 +14,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::{origin, print};
+use crate::{machine, origin, print};
 
 /// A4 PDFs with embedded fonts base64-encode well past axum's 2 MB default.
 const MAX_BODY_BYTES: usize = 25 * 1024 * 1024;
@@ -65,12 +65,20 @@ fn ensure_printer(name: &str) -> Result<(), (StatusCode, String)> {
 pub struct HealthResponse {
     ok: bool,
     version: &'static str,
+    /// Salted hash of this computer's OS id: the key for per-terminal printers.
+    #[serde(rename = "machineId", skip_serializing_if = "Option::is_none")]
+    machine_id: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hostname: Option<&'static str>,
 }
 
 pub async fn health() -> Json<HealthResponse> {
+    let identity = machine::identity();
     Json(HealthResponse {
         ok: true,
         version: env!("CARGO_PKG_VERSION"),
+        machine_id: identity.map(|id| id.machine_id.as_str()),
+        hostname: identity.map(|id| id.hostname.as_str()),
     })
 }
 

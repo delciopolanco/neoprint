@@ -36,6 +36,7 @@ mod console;
 mod http;
 mod install;
 mod logging;
+mod machine;
 mod origin;
 mod print;
 #[cfg(any(windows, target_os = "macos"))]

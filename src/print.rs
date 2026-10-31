@@ -45,7 +45,8 @@ pub fn classify_language(driver: &str) -> PrinterLanguage {
         return PrinterLanguage::Unknown;
     }
     // POS80 covers the Caysn POS80 driver used for 80mm receipt printers.
-    const RAW_MARKERS: [&str; 9] = [
+    // "80mm Series Printer" is the generic driver of 80mm receipt printers.
+    const RAW_MARKERS: [&str; 10] = [
         "generic",
         "postscript",
         "raw",
@@ -55,6 +56,7 @@ pub fn classify_language(driver: &str) -> PrinterLanguage {
         "escpos",
         "pos80",
         "caysn",
+        "80mm",
     ];
     if RAW_MARKERS.iter().any(|m| d.contains(m)) {
         PrinterLanguage::Escpos
@@ -262,6 +264,7 @@ mod tests {
         assert_eq!(classify_language("Generic / Text Only"), PrinterLanguage::Escpos);
         assert_eq!(classify_language("Star TSP100 Thermal"), PrinterLanguage::Escpos);
         assert_eq!(classify_language("Caysn POS80, 1.0"), PrinterLanguage::Escpos);
+        assert_eq!(classify_language("80mm Series Printer"), PrinterLanguage::Escpos);
     }
 
     #[test]
