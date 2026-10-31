@@ -33,29 +33,13 @@ enum UserEvent {
     Update(Option<update::Manifest>),
 }
 
-/// Teal disc with a white printer glyph, drawn in code so the binary needs no
-/// asset file. Swap for a branded `.ico`/PNG via `Icon::from_rgba` later.
+/// The neoprint app icon (`assets/neoprint.jpeg`), pre-scaled to 64x64 RGBA in
+/// `assets/tray-64.rgba`. Regenerate it with ImageMagick when the artwork changes:
+/// `magick assets/neoprint.jpeg -resize 64x64 -depth 8 rgba:assets/tray-64.rgba`.
 fn icon() -> Icon {
-    const N: u32 = 32;
-    let mut rgba = vec![0u8; (N * N * 4) as usize];
-    let center = (N as f32 - 1.0) / 2.0;
-    for y in 0..N {
-        for x in 0..N {
-            let (dx, dy) = (x as f32 - center, y as f32 - center);
-            let inside = dx * dx + dy * dy <= 15.0 * 15.0;
-            // printer: paper (top), body (middle), tray (bottom)
-            let paper = (11..=20).contains(&x) && (7..=12).contains(&y);
-            let body = (7..=24).contains(&x) && (13..=20).contains(&y);
-            let tray = (10..=21).contains(&x) && (18..=25).contains(&y);
-            let px = ((y * N + x) * 4) as usize;
-            if inside {
-                let glyph = paper || body || tray;
-                let (r, g, b) = if glyph { (255, 255, 255) } else { (15, 118, 110) };
-                rgba[px..px + 4].copy_from_slice(&[r, g, b, 255]);
-            }
-        }
-    }
-    Icon::from_rgba(rgba, N, N).expect("32x32 RGBA buffer is valid")
+    const N: u32 = 64;
+    Icon::from_rgba(include_bytes!("../assets/tray-64.rgba").to_vec(), N, N)
+        .expect("64x64 RGBA asset is valid")
 }
 
 fn open_in_file_manager(dir: &PathBuf) {

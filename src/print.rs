@@ -16,11 +16,61 @@ use std::io::Write;
 use anyhow::{Context, Result};
 use printers::common::base::job::PrinterJobOptions;
 
-/// List every printer the OS spooler currently exposes.
-pub fn list_printers() -> Vec<String> {
+/// What a printer's spooler accepts. `Escpos`: only raw ESC/POS bytes (a
+/// generic / PostScript / text queue, or a thermal driver). `Pdf`: a driver
+/// that renders a PDF. `Unknown`: the spooler reported no driver at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrinterLanguage {
+    Escpos,
+    Pdf,
+    Unknown,
+}
+
+/// One printer as the OS spooler sees it, with the format it accepts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PrinterDevice {
+    pub name: String,
+    pub language: PrinterLanguage,
+}
+
+/// Classify a spooler driver / make-and-model string. CUPS reports
+/// `printer-make-and-model` (e.g. "Generic PostScript Printer" for a thermal
+/// receipt printer installed as a generic queue, or "HP Smart Tank ... AirPrint"
+/// for an inkjet); Windows reports the driver name (e.g. "Generic / Text Only").
+/// A generic or raw queue cannot render a PDF, so it takes ESC/POS.
+pub fn classify_language(driver: &str) -> PrinterLanguage {
+    let d = driver.trim().to_ascii_lowercase();
+    if d.is_empty() {
+        return PrinterLanguage::Unknown;
+    }
+    // POS80 covers the Caysn POS80 driver used for 80mm receipt printers.
+    const RAW_MARKERS: [&str; 9] = [
+        "generic",
+        "postscript",
+        "raw",
+        "text only",
+        "thermal",
+        "esc/pos",
+        "escpos",
+        "pos80",
+        "caysn",
+    ];
+    if RAW_MARKERS.iter().any(|m| d.contains(m)) {
+        PrinterLanguage::Escpos
+    } else {
+        PrinterLanguage::Pdf
+    }
+}
+
+/// List every printer the OS spooler currently exposes, with its format.
+pub fn list_devices() -> Vec<PrinterDevice> {
     printers::get_printers()
         .into_iter()
-        .map(|p| p.name)
+        .map(|p| PrinterDevice {
+            language: classify_language(&p.driver_name),
+            name: p.name,
+        })
         .collect()
 }
 
@@ -202,6 +252,27 @@ fn bundled_sumatra() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn generic_postscript_queue_takes_escpos() {
+        assert_eq!(
+            classify_language("Generic PostScript Printer"),
+            PrinterLanguage::Escpos
+        );
+        assert_eq!(classify_language("Generic / Text Only"), PrinterLanguage::Escpos);
+        assert_eq!(classify_language("Star TSP100 Thermal"), PrinterLanguage::Escpos);
+        assert_eq!(classify_language("Caysn POS80, 1.0"), PrinterLanguage::Escpos);
+    }
+
+    #[test]
+    fn driver_printers_take_pdf_and_missing_driver_is_unknown() {
+        assert_eq!(
+            classify_language("HP Smart Tank 580-590 series-AirPrint"),
+            PrinterLanguage::Pdf
+        );
+        assert_eq!(classify_language("Microsoft Print to PDF"), PrinterLanguage::Pdf);
+        assert_eq!(classify_language("  "), PrinterLanguage::Unknown);
+    }
 
     #[test]
     fn sweep_removes_only_stale_neoprint_pdfs() {

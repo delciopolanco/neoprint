@@ -26,6 +26,9 @@ sha2 = "0.10"
 ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
 native-tls = "0.2"
 
+[build-dependencies]
+winres = "0.1"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 

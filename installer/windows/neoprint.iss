@@ -31,6 +31,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 UninstallDisplayName=neoprint (impresión silenciosa)
+UninstallDisplayIcon={app}\neoprint.exe
+SetupIconFile=..\..\assets\neoprint.ico
 CloseApplications=no
 RestartApplications=no
 
@@ -52,7 +54,7 @@ Source: "vendor\SUMATRA-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Neoprint"; ValueData: """{app}\neoprint.exe"" --serve"; Flags: uninsdeletevalue
 
 [Icons]
-Name: "{userprograms}\neoprint"; Filename: "{app}\neoprint.exe"; Parameters: "--serve"
+Name: "{userprograms}\neoprint"; Filename: "{app}\neoprint.exe"; Parameters: "--serve"; IconFilename: "{app}\neoprint.exe"
 
 [Run]
 ; Start the sidecar right away (the tray icon appears), even in silent mode.

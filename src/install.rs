@@ -188,6 +188,77 @@ fn macos_install_dir() -> Result<std::path::PathBuf> {
         .join("Neoprint"))
 }
 
+/// The app icon as an `.icns` (generated from `assets/neoprint.jpeg`).
+#[cfg(target_os = "macos")]
+const MACOS_ICON: &[u8] = include_bytes!("../assets/neoprint.icns");
+
+/// `~/Library/Application Support/Neoprint/Neoprint.app`. Running from inside a
+/// bundle is what gives neoprint its icon in Login Items, Activity Monitor and
+/// notifications; a bare binary shows the generic executable icon.
+#[cfg(target_os = "macos")]
+fn macos_app_bundle_dir() -> Result<std::path::PathBuf> {
+    Ok(macos_install_dir()?.join("Neoprint.app"))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_exe_path() -> Result<std::path::PathBuf> {
+    Ok(macos_app_bundle_dir()?
+        .join("Contents")
+        .join("MacOS")
+        .join("neoprint"))
+}
+
+/// Copy `src` into the app bundle at `exe_dest` and write its Info.plist + icon.
+#[cfg(target_os = "macos")]
+fn write_app_bundle(src: &std::path::Path, exe_dest: &std::path::Path) -> Result<()> {
+    use anyhow::Context;
+    use std::os::unix::fs::PermissionsExt;
+
+    let macos_dir = exe_dest.parent().context("bundle executable has no parent")?;
+    let contents = macos_dir.parent().context("bundle has no Contents dir")?;
+    let resources = contents.join("Resources");
+    std::fs::create_dir_all(&resources)
+        .with_context(|| format!("failed to create {}", resources.display()))?;
+    std::fs::create_dir_all(macos_dir)
+        .with_context(|| format!("failed to create {}", macos_dir.display()))?;
+
+    std::fs::copy(src, exe_dest).with_context(|| {
+        format!("failed to copy {} → {}", src.display(), exe_dest.display())
+    })?;
+    std::fs::set_permissions(exe_dest, std::fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("failed to chmod {}", exe_dest.display()))?;
+
+    std::fs::write(resources.join("neoprint.icns"), MACOS_ICON)
+        .context("failed to write neoprint.icns")?;
+    std::fs::write(contents.join("Info.plist"), macos_info_plist())
+        .context("failed to write Info.plist")?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_info_plist() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Neoprint</string>
+    <key>CFBundleDisplayName</key><string>Neoprint</string>
+    <key>CFBundleIdentifier</key><string>{MACOS_LAUNCH_LABEL}</string>
+    <key>CFBundleExecutable</key><string>neoprint</string>
+    <key>CFBundleIconFile</key><string>neoprint</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>{version}</string>
+    <key>CFBundleVersion</key><string>{version}</string>
+    <key>LSUIElement</key><true/>
+    <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+"#
+    )
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_plist_path() -> Result<std::path::PathBuf> {
     use anyhow::Context;
@@ -206,7 +277,7 @@ pub fn auto_install_on_first_run_if_needed() -> Result<()> {
         return Ok(());
     }
 
-    let install_target = macos_install_dir()?.join("neoprint");
+    let install_target = macos_exe_path()?;
     let current = std::env::current_exe().context("cannot resolve current exe path")?;
     if current == install_target {
         return Ok(());
@@ -225,21 +296,19 @@ pub fn auto_install_on_first_run_if_needed() -> Result<()> {
 #[cfg(target_os = "macos")]
 pub fn run_install(autostart: Option<bool>) -> Result<()> {
     use anyhow::Context;
-    use std::os::unix::fs::PermissionsExt;
 
     let install_dir = macos_install_dir()?;
     std::fs::create_dir_all(&install_dir)
         .with_context(|| format!("failed to create {}", install_dir.display()))?;
-    let dest = install_dir.join("neoprint");
+    let dest = macos_exe_path()?;
+    let bundle = macos_app_bundle_dir()?;
 
     let current = std::env::current_exe().context("cannot resolve current exe path")?;
     if current != dest {
-        std::fs::copy(&current, &dest).with_context(|| {
-            format!("failed to copy {} → {}", current.display(), dest.display())
-        })?;
-        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("failed to chmod {}", dest.display()))?;
-        println!("copied binary → {}", dest.display());
+        write_app_bundle(&current, &dest)?;
+        // Versions before the app bundle kept a bare binary here.
+        let _ = std::fs::remove_file(install_dir.join("neoprint"));
+        println!("installed app bundle → {}", bundle.display());
     } else {
         println!("neoprint already runs from install location: {}", dest.display());
     }
@@ -249,7 +318,7 @@ pub fn run_install(autostart: Option<bool>) -> Result<()> {
     // cleared or the attribute never existed).
     let _ = std::process::Command::new("xattr")
         .args(["-dr", "com.apple.quarantine"])
-        .arg(&dest)
+        .arg(&bundle)
         .status();
 
     let want_autostart = match autostart {
@@ -267,7 +336,7 @@ pub fn run_install(autostart: Option<bool>) -> Result<()> {
 
     println!();
     println!("install complete.");
-    println!("  binary:    {}", dest.display());
+    println!("  app:       {}", bundle.display());
     println!("  autostart: {}", if want_autostart { "yes" } else { "no" });
     Ok(())
 }
@@ -277,21 +346,22 @@ pub fn run_uninstall() -> Result<()> {
     remove_macos_launch_agent_if_exists()?;
 
     let install_dir = macos_install_dir()?;
-    let dest = install_dir.join("neoprint");
+    let bundle = macos_app_bundle_dir()?;
 
     let current = std::env::current_exe().ok();
-    let running_from_install = current.as_deref() == Some(dest.as_path());
+    let running_from_install = current.as_deref().is_some_and(|c| c.starts_with(&bundle));
 
     if running_from_install {
-        println!("note: uninstall was run from the installed binary — delete manually after exit:");
-        println!("      {}", install_dir.display());
-    } else if dest.exists() {
-        match std::fs::remove_file(&dest) {
-            Ok(_) => println!("removed {}", dest.display()),
-            Err(e) => println!("could not remove {} ({e}) — delete manually", dest.display()),
+        println!("note: uninstall was run from the installed app — delete manually after exit:");
+        println!("      {}", bundle.display());
+    } else if bundle.exists() {
+        match std::fs::remove_dir_all(&bundle) {
+            Ok(_) => println!("removed {}", bundle.display()),
+            Err(e) => println!("could not remove {} ({e}) — delete manually", bundle.display()),
         }
-        let _ = std::fs::remove_dir(&install_dir);
     }
+    let _ = std::fs::remove_file(install_dir.join("neoprint"));
+    let _ = std::fs::remove_dir(&install_dir);
 
     println!("uninstall complete.");
     Ok(())

@@ -76,12 +76,17 @@ pub async fn health() -> Json<HealthResponse> {
 
 #[derive(Serialize)]
 pub struct PrintersResponse {
+    /// Display names (kept as-is for existing consumers).
     printers: Vec<String>,
+    /// Same printers with the format each accepts (`escpos` | `pdf` | `unknown`).
+    devices: Vec<print::PrinterDevice>,
 }
 
 pub async fn list_printers() -> Json<PrintersResponse> {
+    let devices = print::list_devices();
     Json(PrintersResponse {
-        printers: print::list_printers(),
+        printers: devices.iter().map(|d| d.name.clone()).collect(),
+        devices,
     })
 }
 
